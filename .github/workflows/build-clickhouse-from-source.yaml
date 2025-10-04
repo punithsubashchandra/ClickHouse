@@ -68,12 +68,21 @@ jobs:
         cd clickhouse-source
         echo "CLICKHOUSE_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
         echo "CLICKHOUSE_BRANCH=$BRANCH" >> $GITHUB_ENV
+        
+        # Try to detect the builder image from the repository
+        if [ -f "docker/packager/binary-builder/Dockerfile" ]; then
+          BUILDER_BASE=$(grep -m1 "^FROM" docker/packager/binary-builder/Dockerfile | awk '{print $2}')
+          echo "Found builder base: $BUILDER_BASE"
+          echo "BUILDER_IMAGE=$BUILDER_BASE" >> $GITHUB_ENV
+        else
+          echo "BUILDER_IMAGE=clickhouse/binary-builder:latest" >> $GITHUB_ENV
+        fi
 
     - name: Create Build Context
       run: |
         mkdir -p build-context
-        cat > build-context/Dockerfile <<'EOF'
-        FROM clickhouse/binary-builder:latest AS builder
+        cat > build-context/Dockerfile <<EOF
+        FROM ${BUILDER_IMAGE} AS builder
         
         # Copy ClickHouse source
         COPY clickhouse-source /ClickHouse
