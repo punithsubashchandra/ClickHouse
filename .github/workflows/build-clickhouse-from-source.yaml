@@ -38,6 +38,18 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
+    - name: Free up disk space
+      run: |
+        echo "Disk space before cleanup:"
+        df -h
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force
+        echo "Disk space after cleanup:"
+        df -h
+
     - name: Log in to Container Registry
       uses: docker/login-action@v3
       with:
@@ -67,8 +79,8 @@ jobs:
         COPY clickhouse-source /ClickHouse
         WORKDIR /ClickHouse
         
-        # Update submodules
-        RUN git submodule update --init --jobs 4
+        # Update submodules with shallow clone to save space
+        RUN git submodule update --init --depth 1 --jobs 2
         
         # Build ClickHouse
         RUN mkdir -p /build && cd /build && \
