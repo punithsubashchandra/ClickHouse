@@ -1,0 +1,148 @@
+name: Build ClickHouse Server (Fork)
+
+on:
+  push:
+    branches: [ main, master, develop, feature/*, bugfix/*, release/* ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'ClickHouse branch to build'
+        required: false
+        default: 'master'
+      platforms:
+        description: 'Platforms to build (linux/amd64, linux/arm64, or both)'
+        required: false
+        default: 'linux/amd64'
+        type: choice
+        options:
+        - linux/amd64
+        - linux/arm64
+        - linux/amd64,linux/arm64
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME_SERVER: ${{ github.repository }}/clickhouse-server
+  CLICKHOUSE_REPO: https://github.com/punithsubashchandra/ClickHouse.git
+
+jobs:
+  build-server:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Clone ClickHouse Repository
+      run: |
+        BRANCH="${{ github.event.inputs.branch || 'master' }}"
+        echo "Building ClickHouse from branch: $BRANCH"
+        git clone --branch "$BRANCH" ${{ env.CLICKHOUSE_REPO }} clickhouse-source
+        cd clickhouse-source
+        echo "CLICKHOUSE_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+        echo "CLICKHOUSE_BRANCH=$BRANCH" >> $GITHUB_ENV
+
+    - name: Create Build Context
+      run: |
+        mkdir -p build-context
+        cat > build-context/Dockerfile <<'EOF'
+        FROM clickhouse/binary-builder:latest AS builder
+        
+        # Copy ClickHouse source
+        COPY clickhouse-source /ClickHouse
+        WORKDIR /ClickHouse
+        
+        # Update submodules
+        RUN git submodule update --init --jobs 4
+        
+        # Build ClickHouse
+        RUN mkdir -p /build && cd /build && \
+            cmake /ClickHouse \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DENABLE_CLICKHOUSE_ALL=OFF \
+              -DENABLE_CLICKHOUSE_SERVER=ON \
+              -DENABLE_CLICKHOUSE_CLIENT=ON && \
+            ninja clickhouse-server clickhouse-client
+        
+        # Runtime stage
+        FROM ubuntu:22.04
+        
+        RUN apt-get update && \
+            apt-get install -y --no-install-recommends \
+              ca-certificates \
+              tzdata \
+              locales \
+              wget && \
+            rm -rf /var/lib/apt/lists/* && \
+            locale-gen en_US.UTF-8
+        
+        ENV LANG=en_US.UTF-8 \
+            LANGUAGE=en_US:en \
+            LC_ALL=en_US.UTF-8 \
+            TZ=UTC
+        
+        # Copy binaries from builder
+        COPY --from=builder /build/programs/clickhouse-server /usr/bin/clickhouse-server
+        COPY --from=builder /build/programs/clickhouse-client /usr/bin/clickhouse-client
+        
+        RUN groupadd -r clickhouse --gid=101 && \
+            useradd -r -g clickhouse --uid=101 --home-dir=/var/lib/clickhouse --shell=/bin/bash clickhouse && \
+            mkdir -p /var/lib/clickhouse /var/log/clickhouse-server /etc/clickhouse-server && \
+            chown -R clickhouse:clickhouse /var/lib/clickhouse /var/log/clickhouse-server /etc/clickhouse-server
+        
+        # Default config
+        RUN mkdir -p /etc/clickhouse-server/config.d /etc/clickhouse-server/users.d && \
+            echo '<clickhouse><listen_host>0.0.0.0</listen_host></clickhouse>' > /etc/clickhouse-server/config.d/listen.xml
+        
+        EXPOSE 8123 9000 9009
+        VOLUME /var/lib/clickhouse
+        
+        USER clickhouse
+        WORKDIR /var/lib/clickhouse
+        
+        ENTRYPOINT ["/usr/bin/clickhouse-server"]
+        CMD ["--config-file=/etc/clickhouse-server/config.xml"]
+        EOF
+        
+        # Copy source to build context
+        cp -r clickhouse-source build-context/
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_SERVER }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=sha,prefix={{branch}}-
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./build-context
+        file: ./build-context/Dockerfile
+        platforms: ${{ github.event.inputs.platforms || 'linux/amd64' }}
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
