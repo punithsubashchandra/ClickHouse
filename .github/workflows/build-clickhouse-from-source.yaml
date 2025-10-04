@@ -25,7 +25,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME_SERVER: ${{ github.repository }}/clickhouse-server
-  CLICKHOUSE_REPO: https://github.com/punithsubashchandra/ClickHouse.git
+  CLICKHOUSE_REPO: ${{ github.server_url }}/${{ github.repository }}.git
 
 jobs:
   build-server:
@@ -50,7 +50,7 @@ jobs:
 
     - name: Clone ClickHouse Repository
       run: |
-        BRANCH="${{ github.event.inputs.branch || 'master' }}"
+        BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
         echo "Building ClickHouse from branch: $BRANCH"
         git clone --branch "$BRANCH" ${{ env.CLICKHOUSE_REPO }} clickhouse-source
         cd clickhouse-source
